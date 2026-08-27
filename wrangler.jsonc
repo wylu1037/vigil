@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cf-chat-cron",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "vars": {
+    "BASE_URL": "https://anyrouter.top/v1"
+  },
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    },
+    "traces": {
+      "enabled": false
+    }
+  }
+}
