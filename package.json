@@ -8,10 +8,10 @@
     "dev": "wrangler dev --test-scheduled",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail",
-    "typecheck": "tsc --noEmit"
+    "types": "wrangler types",
+    "typecheck": "wrangler types && tsc --noEmit"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260827.1",
     "typescript": "^5.9.0",
     "wrangler": "^4.0.0"
   }

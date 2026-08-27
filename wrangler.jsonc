@@ -7,12 +7,21 @@
     "crons": ["* * * * *"]
   },
   "vars": {
-    "BASE_URL": "https://anyrouter.top/v1"
+    "BASE_URL": "https://anyrouter.top/v1",
+    "MAIL_FROM": "AnyRouter <onboarding@resend.dev>"
   },
+  // Stores last block outcome + daily email counter
+  "kv_namespaces": [
+    {
+      "binding": "STATE",
+      "id": "6da8559865354181a61175bff6934978"
+    }
+  ],
   "observability": {
     "logs": {
       "enabled": true,
-      "invocation_logs": true
+      "invocation_logs": true,
+      "head_sampling_rate": 1
     },
     "traces": {
       "enabled": false
