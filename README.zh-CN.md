@@ -1,4 +1,4 @@
-# cf-chat-cron
+# vigil
 
 [English](README.md) | 简体中文
 
@@ -41,6 +41,22 @@ Cron 最小粒度是 1 分钟，因此节奏由代码控制：
 
 这是唯一需要持久化的部分（日计数无法用无状态实现），因此使用了一个很小的 KV namespace。**节奏逻辑本身仍是无状态的**。
 
+## 状态页
+
+Worker 根路径 `/` 提供一个**公开的**服务端渲染状态页：当前状态、24 小时 / 7 天可用率、平均与 P95 延迟、一条按小时着色的 168 格可用性趋势条，以及最近 60 次探测明细。页面每 60 秒自动刷新，边缘缓存 30 秒。
+
+| 路由 | 说明 |
+|---|---|
+| `GET /` | 状态页 HTML |
+| `GET /api/status` | 同一份数据的 JSON |
+| `GET /trigger?t=<token>` | 手动单次探测，需 `TRIGGER_TOKEN` |
+
+探测数据写入 D1：每个块结束时**一次性批量插入**全部尝试，而不是每次请求各写一次 —— 后者会把存储延迟塞进那条按绝对偏移对齐的重试循环。保留 7 天，每天首个块顺带清理过期行。
+
+> 因为探测只在 UTC+8 07:00–23:59 进行，趋势条每天必有 7 小时空档。这些格子渲染为中性灰"窗口外"，与真正的"无数据"和"不可用"三色分明。
+
+页面**不渲染** `BASE_URL`、任何密钥或中转站响应体。`/trigger` 默认失效：未配置 `TRIGGER_TOKEN` 时直接 404，公开部署无法被用来消耗你的中转站额度。
+
 ## 前置要求
 
 - Node.js 18+（建议 LTS）
@@ -58,7 +74,9 @@ Cron 最小粒度是 1 分钟，因此节奏由代码控制：
 | `RESEND_API_KEY` | 是 | Resend API Key | `wrangler secret put RESEND_API_KEY` |
 | `MAIL_TO` | 是 | 通知收件人 | `wrangler secret put MAIL_TO` |
 | `INPUT_TEXT` | 否 | 自定义提示词，缺省时用内置默认值 | `vars` 或 secret |
-| `STATE` | 是 | 邮件计数用的 KV 绑定 | `wrangler.jsonc` 的 `kv_namespaces` |
+| `TRIGGER_TOKEN` | 否 | 解锁 `GET /trigger`，不设则该路由 404 | `wrangler secret put TRIGGER_TOKEN` |
+| `VIGIL_STATE` | 是 | 邮件计数用的 KV 绑定 | `wrangler.jsonc` 的 `kv_namespaces` |
+| `DB` | 是 | 状态页探测数据的 D1 绑定 | `wrangler.jsonc` 的 `d1_databases` |
 
 > ⚠️ 使用 Resend 公共发件地址 `onboarding@resend.dev` 时，**只能发给你自己 Resend 账号的注册邮箱**。要发给其他地址，需先在 Resend 验证自有域名。
 
@@ -70,18 +88,27 @@ Cron 最小粒度是 1 分钟，因此节奏由代码控制：
 pnpm install
 cp .dev.vars.example .dev.vars   # 填入真实值
 
+npx wrangler d1 migrations apply vigil --local   # 建本地表
+
 pnpm dev                          # 本地服务（带 scheduled 测试端点）
 ```
 
 另开终端：
 
 ```bash
+# 打开状态页
+open http://localhost:8787/
+
 # 模拟 cron 触发。必须是偶数分钟且在 UTC+8 窗口内，
 # 否则处理器会按设计直接返回。
 curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"
 
-# 单次连通性测试（不判断窗口和节奏）
-curl "http://localhost:8787/"
+# 单次连通性测试（不判断窗口和节奏），需要 TRIGGER_TOKEN
+curl "http://localhost:8787/trigger?t=$TRIGGER_TOKEN"
+
+# 核对页面数字
+npx wrangler d1 execute vigil --local \
+  --command "SELECT * FROM checks ORDER BY ts DESC LIMIT 10"
 ```
 
 观察 wrangler 日志，每个块结束时有一行汇总：
@@ -103,33 +130,42 @@ pnpm typecheck                    # 先重新生成类型，再 tsc --noEmit
 npx wrangler login
 
 # 2) 创建 KV namespace，把返回的 id 填进 wrangler.jsonc
-npx wrangler kv namespace create STATE
+npx wrangler kv namespace create VIGIL_STATE
 
-# 3) 设置 secrets
+# 3) 创建 D1 数据库，把返回的 database_id 填进 wrangler.jsonc，然后建表
+npx wrangler d1 create vigil
+npx wrangler d1 migrations apply vigil --remote
+
+# 4) 设置 secrets
 npx wrangler secret put API_KEY
 npx wrangler secret put RESEND_API_KEY
 npx wrangler secret put MAIL_TO
+npx wrangler secret put TRIGGER_TOKEN   # 可选，想用 /trigger 才需要
 
-# 4) 部署
+# 5) 部署
 pnpm deploy
 ```
 
 部署后验证：
 
-- **Dashboard** → Workers & Pages → `cf-chat-cron` → **Settings** → **Trigger Events** 查看 Cron 执行历史
-- **历史日志**：Dashboard → `cf-chat-cron` → **Logs**（已开启 observability，免费版保留约 3 天）
+- **状态页**：直接打开 Worker 的 workers.dev 地址
+- **Dashboard** → Workers & Pages → `vigil` → **Settings** → **Trigger Events** 查看 Cron 执行历史
+- **历史日志**：Dashboard → `vigil` → **Logs**（已开启 observability，免费版保留约 3 天）
 - **实时日志**：`pnpm tail`
 
 ## 文件结构
 
 ```
-wrangler.jsonc        # Cron 触发器、vars、KV 绑定、observability
-src/index.ts          # 入口：窗口 + 偶数分钟判断，然后跑块
+wrangler.jsonc        # Cron 触发器、vars、KV/D1 绑定、observability
+migrations/           # D1 建表脚本
+src/index.ts          # 入口：cron 处理器 + 状态页路由
 src/schedule.ts       # 自适应块 —— 节奏、抖动、恢复判定
-src/api.ts            # Responses API 调用，返回成败
+src/api.ts            # Responses API 调用，返回成败 + 延迟
+src/db.ts             # D1：探测时序的写入、清理与聚合查询
+src/ui.ts             # 状态页 HTML（服务端渲染）
 src/mailer.ts         # Resend 邮件通知
 src/state.ts          # KV：上一块结果 + 每日邮件计数
-src/config.ts         # 请求常量（Env 是生成的，不手写）
+src/config.ts         # 请求与页面常量（Env 是生成的，不手写）
 .dev.vars.example     # 本地密钥模板
 ```
 

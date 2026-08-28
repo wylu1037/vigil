@@ -13,8 +13,9 @@
 // drifting by however long each request took, and makes the gap between a
 // block's last attempt (~100s) and the next block's first (120s) still 20s.
 
-import { sendChat } from "./api";
+import { sendChat, type ProbeResult } from "./api";
 import { DAILY_EMAIL_LIMIT, UTC8_OFFSET_MS } from "./config";
+import { pruneOld, recordProbes } from "./db";
 import { sendRecoveryEmail } from "./mailer";
 import { readState, writeState, type Outcome } from "./state";
 
@@ -53,6 +54,7 @@ export async function runAdaptiveBlock(env: Env): Promise<void> {
 
   let failures = 0;
   let ok = false;
+  const probes: ProbeResult[] = [];
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     if (attempt > 0) {
@@ -63,7 +65,10 @@ export async function runAdaptiveBlock(env: Env): Promise<void> {
       if (delay > 0) await sleep(delay);
     }
 
-    if (await sendChat(env)) {
+    const probe = await sendChat(env);
+    probes.push(probe);
+
+    if (probe.ok) {
       ok = true;
       break;
     }
@@ -109,6 +114,14 @@ export async function runAdaptiveBlock(env: Env): Promise<void> {
 
   // Write only on a real change — keeps us far inside the KV free tier
   if (dirty) {
-    await writeState(env, { ...state, lastOutcome: outcome, emailCount });
+    await writeState(env, {
+      lastOutcome: outcome,
+      emailDate: state.emailDate,
+      emailCount,
+    });
   }
+
+  // Dashboard storage, strictly after the cadence-critical work is done
+  await recordProbes(env, probes);
+  if (state.dayRolled) await pruneOld(env, now.getTime());
 }

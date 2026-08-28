@@ -1,8 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "cf-chat-cron",
+  "name": "vigil",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
+  "workers_dev": true,
+  "preview_urls": false,
   "triggers": {
     "crons": ["* * * * *"]
   },
@@ -10,11 +12,18 @@
     "BASE_URL": "https://anyrouter.top/v1",
     "MAIL_FROM": "AnyRouter <onboarding@resend.dev>"
   },
-  // Stores last block outcome + daily email counter
   "kv_namespaces": [
     {
-      "binding": "STATE",
-      "id": "6da8559865354181a61175bff6934978"
+      "binding": "VIGIL_STATE",
+      "id": "8b1985324cfd4747bd222c224e2d0e78"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "vigil",
+      "database_id": "e1f38008-7d77-44dd-bb20-3aa24b9f0f80",
+      "migrations_dir": "migrations"
     }
   ],
   "observability": {

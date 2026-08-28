@@ -7,3 +7,7 @@ INPUT_TEXT=Hi! What is the current time? Don't reply to anything else.
 # Resend — required for "activation succeeded" email notifications
 RESEND_API_KEY=re_xxxxxxxxxxxxxxxx
 MAIL_TO=you@example.com
+
+# Unlocks GET /trigger?t=<token> for a manual one-shot probe.
+# Leave unset and the route 404s — the status page itself is public.
+TRIGGER_TOKEN=pick-any-random-string
