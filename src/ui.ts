@@ -123,6 +123,46 @@ function buildCells(data: DashboardData): Cell[] {
   return cells;
 }
 
+// Decorative sweeping radar, shown beside the title. Purely presentational:
+// aria-hidden so it stays out of the accessibility tree, and it reads no
+// probe data — the sweep runs at a fixed rate whatever the relay is doing.
+// Wedge paths are pre-computed (SVG has no conic gradient), and each blip is
+// delayed by its own bearing so it flares as the leading edge crosses it.
+// Source: https://circleloaders.dominikakissi.com/#radar
+function radar(): string {
+  const wedges = Array.from({ length: 36 }, (_, i) => {
+    const a0 = ((i * 2.5 - 90) * Math.PI) / 180;
+    const a1 = (((i + 1) * 2.5 - 90) * Math.PI) / 180;
+    const p = (a: number) =>
+      `${(32 + 31.5 * Math.cos(a)).toFixed(2)},${(32 + 31.5 * Math.sin(a)).toFixed(2)}`;
+    // Quartic falloff: the trailing edge fades fast, the head stays bright.
+    const opacity = (((i + 1) / 36) ** 4 * 0.85).toFixed(3);
+    return `<path d="M32,32L${p(a0)}A31.5,31.5 0 0,1 ${p(a1)}Z" fill="currentColor" opacity="${opacity}"/>`;
+  }).join("");
+
+  const blips = [
+    [49.15, 18.6, 52],
+    [39.12, 43.4, 148],
+    [17.68, 53.22, 214],
+    [18.27, 20.48, 310],
+  ]
+    .map(
+      ([cx, cy, bearing]) =>
+        `<circle class="rad-blip" cx="${cx}" cy="${cy}" r="2" style="--bearing:${bearing}"/>`
+    )
+    .join("");
+
+  return `<svg class="rad" viewBox="0 0 64 64" width="44" height="44" fill="none" aria-hidden="true" focusable="false">
+    <defs><clipPath id="rad-disc"><circle cx="32" cy="32" r="32"/></clipPath></defs>
+    <circle class="rad-ring" cx="32" cy="32" r="31.5"/>
+    <circle class="rad-ring" cx="32" cy="32" r="15"/>
+    <line class="rad-cross" x1="0.5" y1="32" x2="63.5" y2="32"/>
+    <line class="rad-cross" x1="32" y1="0.5" x2="32" y2="63.5"/>
+    <g clip-path="url(#rad-disc)"><g class="rad-sweep">${wedges}</g></g>
+    ${blips}
+  </svg>`;
+}
+
 function statusBadge(data: DashboardData): string {
   if (data.degraded) {
     return `<span class="badge badge-unknown">Storage error</span>`;
@@ -166,8 +206,8 @@ export function renderDashboard(data: DashboardData): string {
       (p) => `
       <tr>
         <td class="mono">${escape(fmtDateTime(p.ts))}</td>
-        <td><span class="dot ${p.ok ? "dot-up" : "dot-down"}"></span>${p.ok ? "OK" : "Failed"}</td>
-        <td class="mono">${p.status === 0 ? "network error" : p.status}</td>
+        <td class="mid"><span class="dot ${p.ok ? "dot-up" : "dot-down"}" title="${p.ok ? "OK" : "Failed"}"></span></td>
+        <td class="mono mid">${p.status === 0 ? "network error" : p.status}</td>
         <td class="mono num">${p.latencyMs} ms</td>
       </tr>`
     )
@@ -195,6 +235,30 @@ export function renderDashboard(data: DashboardData): string {
   }
   .wrap { max-width: 960px; margin: 0 auto; }
   header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  /* Radar emblem. --rate scales every duration at once. */
+  .rad { color: var(--c-up); --dur: 2.8s; --rate: 1; align-self: center; flex: none; }
+  .rad-ring { stroke: currentColor; stroke-width: 1; opacity: .16; }
+  .rad-cross { stroke: currentColor; stroke-width: 1; opacity: .13; }
+  .rad-sweep {
+    transform-box: view-box; transform-origin: center;
+    animation: rad-sweep calc(var(--dur) * var(--rate)) linear infinite;
+  }
+  .rad-blip {
+    fill: currentColor; transform-box: fill-box; transform-origin: center;
+    opacity: 0;
+    animation: rad-blip calc(var(--dur) * var(--rate)) ease-out infinite;
+    animation-delay: calc(var(--bearing) / 360 * var(--dur) * var(--rate));
+  }
+  @keyframes rad-sweep { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  @keyframes rad-blip {
+    0%   { opacity: 1; transform: scale(1.25); }
+    45%  { opacity: .35; transform: scale(1); }
+    100% { opacity: 0; transform: scale(1); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rad-sweep { animation: none; transform: rotate(214deg); }
+    .rad-blip { animation: none; opacity: .7; }
+  }
   h1 { margin: 0; font-size: 22px; letter-spacing: .3px; }
   .sub { color: var(--muted); font-size: 13px; }
   .badge {
@@ -245,9 +309,10 @@ export function renderDashboard(data: DashboardData): string {
   th { color: var(--muted); font-weight: 500; font-size: 12px; }
   tbody tr:last-child td { border-bottom: none; }
   .num { text-align: right; }
+  .mid { text-align: center; }
   .mono { font-family: Menlo, Consolas, monospace; font-size: 12px; }
   .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-         margin-right: 6px; vertical-align: 1px; }
+         vertical-align: 1px; }
   .dot-up { background: var(--c-up); }
   .dot-down { background: var(--c-down); }
   .empty { color: var(--muted); padding: 20px 0; text-align: center; }
@@ -257,6 +322,7 @@ export function renderDashboard(data: DashboardData): string {
 <body>
 <div class="wrap">
   <header>
+    ${radar()}
     <h1>${escape(SITE_TITLE)}</h1>
     ${statusBadge(data)}
     <span class="sub">${escape(MODEL_ID)}</span>
@@ -291,7 +357,7 @@ export function renderDashboard(data: DashboardData): string {
     ${
       rows
         ? `<table>
-      <thead><tr><th>Time (UTC+8)</th><th>Result</th><th>Status</th><th class="num">Latency</th></tr></thead>
+      <thead><tr><th>Time (UTC+8)</th><th class="mid">Result</th><th class="mid">Status</th><th class="num">Latency</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`
         : `<div class="empty">No data yet</div>`

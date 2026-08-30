@@ -18,6 +18,8 @@ worker-configuration.d.ts
 dist/
 *.tsbuildinfo
 
+pinger/
+
 # Logs
 *.log
 logs/
