@@ -19,12 +19,56 @@ export const DAILY_EMAIL_LIMIT = 10;
 // Shared by the send window and the daily email counter
 export const UTC8_OFFSET_MS = 8 * 60 * 60 * 1000;
 
+// --- Time units ---
+
+const MINUTE_MS = 60_000;
+export const HOUR_MS = 3_600_000;
+const DAY_MS = 24 * HOUR_MS;
+
+// --- Manual pause ---
+
+// Every pause carries an expiry, and the expiry is bounded: a stray or
+// forgotten /pause can silence the relay's keep-alive for at most a month,
+// never indefinitely. A longer stand-down is a deploy-level decision — set
+// `crons` to [] in wrangler.jsonc — not something a URL should be able to do.
+export const MAX_PAUSE_DAYS = 30;
+const MAX_PAUSE_MS = MAX_PAUSE_DAYS * DAY_MS;
+
+// Used when /pause is called without an explicit ?for=. Kept as a duration
+// string so it goes through the same parser as anything a caller sends —
+// there is one definition of what a valid duration is, not two.
+const DEFAULT_PAUSE = "60m";
+
+const UNIT_MS: Record<string, number> = {
+  m: MINUTE_MS,
+  h: HOUR_MS,
+  d: DAY_MS,
+};
+
+export interface PauseDuration {
+  ms: number;
+  label: string; // normalised form, echoed back in the response
+}
+
+// A whole number with an optional m/h/d suffix; a bare number stays minutes,
+// which is what ?for= meant before units existed. Null means reject: an
+// out-of-range value is a 400 rather than a silent clamp, so a typo'd
+// ?for=300d does not quietly become a month of silence.
+export function parsePauseDuration(raw: string | null): PauseDuration | null {
+  const parts = /^(\d+)([mhd])?$/.exec((raw || DEFAULT_PAUSE).trim().toLowerCase());
+  if (!parts) return null;
+
+  const n = Number(parts[1]);
+  const unit = parts[2] || "m";
+  const ms = n * UNIT_MS[unit];
+  if (n < 1 || ms > MAX_PAUSE_MS) return null;
+
+  return { ms, label: `${n}${unit}` };
+}
+
 // --- Status dashboard ---
 
 export const SITE_TITLE = "Vigil Pulse";
-
-export const HOUR_MS = 3_600_000;
-const MINUTE_MS = 60_000;
 
 // How long probe rows are kept in D1. No range in RANGES may span more
 // than this — the trend strip cannot show more history than we retain.

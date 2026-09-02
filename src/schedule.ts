@@ -12,12 +12,15 @@
 // sleeping a fixed amount after each request. That keeps the rhythm from
 // drifting by however long each request took, and makes the gap between a
 // block's last attempt (~100s) and the next block's first (120s) still 20s.
+//
+// Two things can suppress a block entirely: the UTC+8 send window (checked
+// by the caller, no I/O) and a manual pause (checked here, one KV read).
 
 import { sendChat, type ProbeResult } from "./api";
 import { DAILY_EMAIL_LIMIT, UTC8_OFFSET_MS } from "./config";
 import { pruneOld, recordProbes } from "./db";
 import { sendRecoveryEmail } from "./mailer";
-import { readState, writeState, type Outcome } from "./state";
+import { readPause, readState, writeState, type Outcome } from "./state";
 
 const BLOCK_MS = 120_000; // one block == the keep-alive interval
 const RETRY_MS = 20_000; // activation interval
@@ -50,7 +53,25 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export async function runAdaptiveBlock(env: Env): Promise<void> {
   const blockStart = Date.now();
   const deadline = blockStart + BLOCK_MS - GUARD_MS;
-  const state = await readState(env, new Date(blockStart));
+
+  // One round trip for both keys: the pause gate must not add latency to a
+  // cadence that is pinned to absolute offsets, and it is checked far more
+  // often than it is ever set.
+  const [state, pause] = await Promise.all([
+    readState(env, new Date(blockStart)),
+    readPause(env, blockStart),
+  ]);
+
+  // A manual pause suppresses the automatic cadence only. /trigger stays
+  // live on purpose — it is an explicit, one-shot act by whoever holds the
+  // token, not the scheduled traffic being paused.
+  if (pause) {
+    console.log(
+      `[${new Date(blockStart).toISOString()}] paused until ` +
+        `${new Date(pause.until).toISOString()}, skip`
+    );
+    return;
+  }
 
   let failures = 0;
   let ok = false;
@@ -81,6 +102,10 @@ export async function runAdaptiveBlock(env: Env): Promise<void> {
   // "Activation succeeded" == we got back up after failing. Either we failed
   // earlier in this block, or the previous block ended down (which is the
   // case a purely block-local check would miss).
+  //
+  // This spans a pause as well, and intentionally so: pausing while the
+  // relay is down and coming back to a healthy one is exactly the recovery
+  // the email is for — the gap in between does not make it less true.
   const crossedBlocks = state.lastOutcome === "fail";
   const recovered = ok && (failures > 0 || crossedBlocks);
 

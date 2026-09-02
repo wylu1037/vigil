@@ -1,9 +1,13 @@
 // Persisted state in KV.
 //
-// Only the email side needs persistence: the send cadence itself is
-// stateless (each 2-minute block decides independently). We keep the last
-// block outcome too, so a recovery that lands on a block's *first* attempt
-// is still recognised as one.
+// Two independent records live here:
+//
+//   "worker-state" — the email side. The send cadence itself is stateless
+//     (each 2-minute block decides independently); we keep the last block
+//     outcome too, so a recovery that lands on a block's *first* attempt is
+//     still recognised as one.
+//
+//   "pause" — a manual, always-expiring stand-down of the automatic cadence.
 
 import { UTC8_OFFSET_MS } from "./config";
 
@@ -75,4 +79,67 @@ export async function writeState(env: Env, state: State): Promise<void> {
       `[${new Date().toISOString()}] state write failed: ${String(e)}`
     );
   }
+}
+
+// --- Manual pause ---
+//
+// Deliberately its own KV key rather than a field on State. A block owns
+// its two minutes and can stay busy for ~115s on the activation cadence,
+// then writes State back from the snapshot it read at the start. A /pause
+// landing mid-block would be read after that snapshot and clobbered before
+// it ever took effect. Separate keys means the two writers never race.
+
+const PAUSE_KEY = "pause";
+
+// KV's floor for expirationTtl. Shorter pauses still expire on time — the
+// `until` comparison below is what actually gates probing; the TTL only
+// saves us from leaving a dead key around.
+const MIN_TTL_SECONDS = 60;
+
+export interface Pause {
+  since: number; // Unix ms, when the pause was requested
+  until: number; // Unix ms, when the cadence resumes by itself
+}
+
+// Null means "not paused" — including when KV is unreachable. Failing open
+// is the deliberate choice here: this worker exists to keep a relay warm,
+// so probing when we meant to be quiet costs one request, while going
+// silently dark on a storage blip costs the thing we are here to protect.
+export async function readPause(env: Env, now: number): Promise<Pause | null> {
+  try {
+    const raw = await env.VIGIL_STATE.get(PAUSE_KEY, "json");
+    if (!raw) return null;
+
+    const p = raw as Partial<Pause>;
+    // A record without a usable expiry is treated as absent, so a
+    // hand-edited or truncated value can never pause the worker forever.
+    if (typeof p.until !== "number" || !Number.isFinite(p.until)) return null;
+    if (p.until <= now) return null;
+
+    return {
+      since: typeof p.since === "number" ? p.since : now,
+      until: p.until,
+    };
+  } catch (e: unknown) {
+    console.error(
+      `[${new Date(now).toISOString()}] pause read failed: ${String(e)}`
+    );
+    return null;
+  }
+}
+
+// Unlike writeState, these two let their errors escape. They run on the
+// request path, where the caller is an operator waiting on an answer: a
+// swallowed failure would report "paused" for a pause that never landed.
+export async function writePause(env: Env, pause: Pause): Promise<void> {
+  await env.VIGIL_STATE.put(PAUSE_KEY, JSON.stringify(pause), {
+    expirationTtl: Math.max(
+      MIN_TTL_SECONDS,
+      Math.ceil((pause.until - Date.now()) / 1000)
+    ),
+  });
+}
+
+export async function clearPause(env: Env): Promise<void> {
+  await env.VIGIL_STATE.delete(PAUSE_KEY);
 }

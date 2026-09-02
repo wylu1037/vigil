@@ -50,12 +50,33 @@ The Worker serves a **public**, server-rendered status page at `/`: current stat
 | `GET /` | the status page |
 | `GET /api/status` | the same data as JSON |
 | `GET /trigger?t=<token>` | manual one-shot probe, needs `TRIGGER_TOKEN` |
+| `GET /pause?t=<token>&m=<minutes>` | stand the automatic cadence down, needs `TRIGGER_TOKEN` |
+| `GET /resume?t=<token>` | lift a pause early, needs `TRIGGER_TOKEN` |
 
 Probes land in D1 as **one batched insert per block**, not one write per request — the latter would put storage latency inside a retry loop that is pinned to absolute offsets. Rows are kept for 7 days; the first block of each day sweeps the rest.
 
 > Since probing only runs 07:00–23:59 (UTC+8), the strip has a 7-hour gap every night. Those cells render as a neutral grey "outside window", distinct from both "no data" and "down".
 
 The page renders **no** `BASE_URL`, no credentials, and no slice of the relay's response. `/trigger` fails closed: with no `TRIGGER_TOKEN` configured it simply 404s, so a public deployment can never be used to burn your relay quota.
+
+## Pause & Resume
+
+Sometimes you need the pings to stop for a while — the relay is under maintenance, you are debugging it by hand, or you would rather not have recovery emails firing during a known outage.
+
+```bash
+curl "https://<worker>/pause?t=$TRIGGER_TOKEN&m=90"   # 90 minutes
+curl "https://<worker>/pause?t=$TRIGGER_TOKEN"        # defaults to 60
+curl "https://<worker>/resume?t=$TRIGGER_TOKEN"       # lift it early
+```
+
+**Every pause expires.** `m` is capped at 24 hours and there is no way to ask for an open-ended one. That is deliberate: the whole point of this Worker is that the relay never goes cold, so a pause you forget about must not be able to silence it indefinitely. If you genuinely need a longer stand-down, remove the cron trigger — that is a deploy-level decision, and it should look like one.
+
+A few properties worth knowing:
+
+- **`/trigger` still works while paused.** A pause suppresses *scheduled* traffic; an explicit one-shot probe is you asking on purpose, and it is the natural way to check whether whatever you paused for is over.
+- **It fails open.** If KV is unreachable when the gate is checked, the Worker probes anyway. Sending a request we meant to skip costs one request; going quietly dark on a storage blip costs the thing this Worker exists to protect.
+- **The page says so.** While paused, `/` shows a `Paused` badge, a banner with the resume time, and a parked radar; the affected cells in the trend strip read "paused" rather than "no data". `/api/status` carries the same under a `pause` field.
+- **Recovery email still fires afterwards.** If you pause while the relay is down and it is healthy when probing resumes, that counts as a recovery and you get the email. The gap does not make it less true.
 
 ## Prerequisites
 
@@ -74,8 +95,8 @@ The page renders **no** `BASE_URL`, no credentials, and no slice of the relay's 
 | `RESEND_API_KEY` | Yes | Resend API key | `wrangler secret put RESEND_API_KEY` |
 | `MAIL_TO` | Yes | Notification recipient | `wrangler secret put MAIL_TO` |
 | `INPUT_TEXT` | No | Custom prompt; falls back to a built-in default | `vars` or secret |
-| `TRIGGER_TOKEN` | No | Unlocks `GET /trigger`; the route 404s without it | `wrangler secret put TRIGGER_TOKEN` |
-| `VIGIL_STATE` | Yes | KV binding for the email counter | `wrangler.jsonc` `kv_namespaces` |
+| `TRIGGER_TOKEN` | No | Unlocks `GET /trigger`, `/pause` and `/resume`; they 404 without it | `wrangler secret put TRIGGER_TOKEN` |
+| `VIGIL_STATE` | Yes | KV binding for the email counter and the pause record | `wrangler.jsonc` `kv_namespaces` |
 | `DB` | Yes | D1 binding for the status page's probe history | `wrangler.jsonc` `d1_databases` |
 
 > ⚠️ With Resend's shared `onboarding@resend.dev` sender, you can **only send to your own Resend account email**. To notify any other address, verify a domain in Resend first.
@@ -105,6 +126,10 @@ curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"
 
 # Single connectivity check (ignores window and cadence); needs TRIGGER_TOKEN
 curl "http://localhost:8787/trigger?t=$TRIGGER_TOKEN"
+
+# Pause the scheduled cadence, then lift it again
+curl "http://localhost:8787/pause?t=$TRIGGER_TOKEN&m=5"
+curl "http://localhost:8787/resume?t=$TRIGGER_TOKEN"
 
 # Cross-check what the page shows
 npx wrangler d1 execute vigil --local \
@@ -159,13 +184,13 @@ Verify after deploying:
 ```
 wrangler.jsonc        # cron trigger, vars, KV + D1 bindings, observability
 migrations/           # D1 schema
-src/index.ts          # entry: cron handler + status page routes
-src/schedule.ts       # the adaptive block — cadence, jitter, recovery rule
+src/index.ts          # entry: cron handler + status page and control routes
+src/schedule.ts       # the adaptive block — cadence, jitter, pause gate, recovery rule
 src/api.ts            # Responses API call; returns success + latency
 src/db.ts             # D1: probe writes, retention sweep, dashboard queries
 src/ui.ts             # the status page HTML (server-rendered)
 src/mailer.ts         # Resend notification
-src/state.ts          # KV: last outcome + daily email counter
+src/state.ts          # KV: last outcome + daily email counter, and the pause record
 src/config.ts         # request and page constants (Env is generated)
 .dev.vars.example     # template for local secrets
 ```

@@ -50,12 +50,33 @@ Worker 根路径 `/` 提供一个**公开的**服务端渲染状态页：当前�
 | `GET /` | 状态页 HTML |
 | `GET /api/status` | 同一份数据的 JSON |
 | `GET /trigger?t=<token>` | 手动单次探测，需 `TRIGGER_TOKEN` |
+| `GET /pause?t=<token>&m=<分钟>` | 暂停自动节奏，需 `TRIGGER_TOKEN` |
+| `GET /resume?t=<token>` | 提前解除暂停，需 `TRIGGER_TOKEN` |
 
 探测数据写入 D1：每个块结束时**一次性批量插入**全部尝试，而不是每次请求各写一次 —— 后者会把存储延迟塞进那条按绝对偏移对齐的重试循环。保留 7 天，每天首个块顺带清理过期行。
 
 > 因为探测只在 UTC+8 07:00–23:59 进行，趋势条每天必有 7 小时空档。这些格子渲染为中性灰"窗口外"，与真正的"无数据"和"不可用"三色分明。
 
 页面**不渲染** `BASE_URL`、任何密钥或中转站响应体。`/trigger` 默认失效：未配置 `TRIGGER_TOKEN` 时直接 404，公开部署无法被用来消耗你的中转站额度。
+
+## 暂停与恢复
+
+有时需要让探测停一会儿：中转站在维护、你正在手动调试它，或者只是不想在一次已知故障期间被恢复邮件轰炸。
+
+```bash
+curl "https://<worker>/pause?t=$TRIGGER_TOKEN&m=90"   # 暂停 90 分钟
+curl "https://<worker>/pause?t=$TRIGGER_TOKEN"        # 不传 m 则默认 60 分钟
+curl "https://<worker>/resume?t=$TRIGGER_TOKEN"       # 提前恢复
+```
+
+**任何暂停都必然到期。** `m` 上限 24 小时，且没有"无限期暂停"这个选项。这是有意为之：这个 Worker 存在的全部意义就是不让中转站冷掉，那么一次被遗忘的暂停就绝不能把它永久静音。真需要更长时间的停机，就去掉 cron 触发器 —— 那本就是部署级别的决定，也该长得像一个部署级别的决定。
+
+几个值得知道的性质：
+
+- **暂停期间 `/trigger` 依然可用。** 暂停压制的是*定时*流量；显式的单次探测是你主动发起的，而且它正是用来确认"暂停的理由是否已经消失"的顺手工具。
+- **失败方向是继续探测。** 如果查询闸门时 KV 不可达，Worker 会照常发探测。多发一次本该跳过的请求，代价是一次请求；而因为一次存储抖动就悄悄停摆，代价是这个 Worker 要保护的东西本身。
+- **页面会明说。** 暂停期间 `/` 会显示 `Paused` 徽章、写明恢复时间的横幅，以及一个停转的雷达；趋势条上受影响的格子标注为"paused"而非"no data"。`/api/status` 里对应 `pause` 字段。
+- **恢复邮件之后照发。** 如果你在中转站不可用时暂停，恢复探测后它已经健康，这仍然算一次"活性恢复"，邮件照发。中间那段空档并不会让这个判断变得不成立。
 
 ## 前置要求
 
@@ -74,8 +95,8 @@ Worker 根路径 `/` 提供一个**公开的**服务端渲染状态页：当前�
 | `RESEND_API_KEY` | 是 | Resend API Key | `wrangler secret put RESEND_API_KEY` |
 | `MAIL_TO` | 是 | 通知收件人 | `wrangler secret put MAIL_TO` |
 | `INPUT_TEXT` | 否 | 自定义提示词，缺省时用内置默认值 | `vars` 或 secret |
-| `TRIGGER_TOKEN` | 否 | 解锁 `GET /trigger`，不设则该路由 404 | `wrangler secret put TRIGGER_TOKEN` |
-| `VIGIL_STATE` | 是 | 邮件计数用的 KV 绑定 | `wrangler.jsonc` 的 `kv_namespaces` |
+| `TRIGGER_TOKEN` | 否 | 解锁 `GET /trigger`、`/pause`、`/resume`，不设则这些路由 404 | `wrangler secret put TRIGGER_TOKEN` |
+| `VIGIL_STATE` | 是 | 邮件计数与暂停记录用的 KV 绑定 | `wrangler.jsonc` 的 `kv_namespaces` |
 | `DB` | 是 | 状态页探测数据的 D1 绑定 | `wrangler.jsonc` 的 `d1_databases` |
 
 > ⚠️ 使用 Resend 公共发件地址 `onboarding@resend.dev` 时，**只能发给你自己 Resend 账号的注册邮箱**。要发给其他地址，需先在 Resend 验证自有域名。
@@ -105,6 +126,10 @@ curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"
 
 # 单次连通性测试（不判断窗口和节奏），需要 TRIGGER_TOKEN
 curl "http://localhost:8787/trigger?t=$TRIGGER_TOKEN"
+
+# 暂停定时节奏，再解除
+curl "http://localhost:8787/pause?t=$TRIGGER_TOKEN&m=5"
+curl "http://localhost:8787/resume?t=$TRIGGER_TOKEN"
 
 # 核对页面数字
 npx wrangler d1 execute vigil --local \
@@ -158,13 +183,13 @@ pnpm deploy
 ```
 wrangler.jsonc        # Cron 触发器、vars、KV/D1 绑定、observability
 migrations/           # D1 建表脚本
-src/index.ts          # 入口：cron 处理器 + 状态页路由
-src/schedule.ts       # 自适应块 —— 节奏、抖动、恢复判定
+src/index.ts          # 入口：cron 处理器 + 状态页与控制路由
+src/schedule.ts       # 自适应块 —— 节奏、抖动、暂停闸门、恢复判定
 src/api.ts            # Responses API 调用，返回成败 + 延迟
 src/db.ts             # D1：探测时序的写入、清理与聚合查询
 src/ui.ts             # 状态页 HTML（服务端渲染）
 src/mailer.ts         # Resend 邮件通知
-src/state.ts          # KV：上一块结果 + 每日邮件计数
+src/state.ts          # KV：上一块结果 + 每日邮件计数，以及暂停记录
 src/config.ts         # 请求与页面常量（Env 是生成的，不手写）
 .dev.vars.example     # 本地密钥模板
 ```

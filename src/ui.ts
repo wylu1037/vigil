@@ -8,6 +8,14 @@
 
 import { HOUR_MS, MODEL_ID, RANGES, SITE_TITLE, UTC8_OFFSET_MS } from "./config";
 import type { Bucket, DashboardData } from "./db";
+import type { Pause } from "./state";
+
+// What the page renders: the D1 dashboard plus the one piece of state that
+// does not come from D1. Kept here rather than on DashboardData so db.ts
+// stays purely about the probe store.
+export interface DashboardView extends DashboardData {
+  pause: Pause | null;
+}
 
 const REFRESH_SECONDS = 60;
 
@@ -66,6 +74,20 @@ const inWindow = (ms: number) => {
 const bucketIsIdle = (start: number, width: number) =>
   !inWindow(start) && !inWindow(start + width - 1);
 
+// Rough remaining time, for the pause banner: "3d 4h", "2h 15m", "45m".
+// Two units is as far as it goes — the banner prints the exact resume time
+// next to this, so all this has to carry is the scale.
+function fmtLeft(ms: number): string {
+  if (ms < 60_000) return "under a minute";
+  const mins = Math.round(ms / 60_000);
+  const d = Math.floor(mins / 1440);
+  const h = Math.floor((mins % 1440) / 60);
+  const m = mins % 60;
+  if (d) return h ? `${d}d ${h}h` : `${d}d`;
+  if (h) return m ? `${h}h ${m}m` : `${h}h`;
+  return `${m}m`;
+}
+
 function pct(up: number, total: number): string {
   if (total === 0) return "—";
   return `${((up / total) * 100).toFixed(2)}%`;
@@ -78,7 +100,7 @@ interface Cell {
   title: string;
 }
 
-function buildCells(data: DashboardData): Cell[] {
+function buildCells(data: DashboardView): Cell[] {
   const { bucketMs, spanMs } = data.range;
   const byBucket = new Map<number, Bucket>(
     data.buckets.map((b) => [b.bucket, b])
@@ -89,6 +111,14 @@ function buildCells(data: DashboardData): Cell[] {
   const fmt = bucketMs < HOUR_MS ? fmtMinute : fmtHour;
   const cells: Cell[] = [];
 
+  // Only the pause in effect right now is known — there is no history of
+  // past ones — and a bucket must be *wholly* inside it to count. A short
+  // pause inside a wide bucket leaves the bucket as plain "no data", which
+  // is the honest reading: something else was missing too.
+  const p = data.pause;
+  const bucketIsPaused = (start: number, width: number) =>
+    p !== null && p.since <= start && start + width - 1 <= p.until;
+
   for (let i = count - 1; i >= 0; i--) {
     const idx = current - i;
     const startMs = idx * bucketMs;
@@ -96,11 +126,15 @@ function buildCells(data: DashboardData): Cell[] {
     const b = byBucket.get(idx);
 
     if (!b || b.total === 0) {
-      cells.push(
-        bucketIsIdle(startMs, bucketMs)
-          ? { color: "var(--c-idle)", title: `${label} · outside window` }
-          : { color: "var(--c-missing)", title: `${label} · no data` }
-      );
+      // Window first: hours outside it were never going to have probes,
+      // pause or no pause.
+      if (bucketIsIdle(startMs, bucketMs)) {
+        cells.push({ color: "var(--c-idle)", title: `${label} · outside window` });
+      } else if (bucketIsPaused(startMs, bucketMs)) {
+        cells.push({ color: "var(--c-idle)", title: `${label} · paused` });
+      } else {
+        cells.push({ color: "var(--c-missing)", title: `${label} · no data` });
+      }
       continue;
     }
 
@@ -126,10 +160,12 @@ function buildCells(data: DashboardData): Cell[] {
 // Decorative sweeping radar, shown beside the title. Purely presentational:
 // aria-hidden so it stays out of the accessibility tree, and it reads no
 // probe data — the sweep runs at a fixed rate whatever the relay is doing.
+// The one exception is a pause, where a sweeping radar would claim we are
+// still watching; it parks instead, at the same angle reduced-motion uses.
 // Wedge paths are pre-computed (SVG has no conic gradient), and each blip is
 // delayed by its own bearing so it flares as the leading edge crosses it.
 // Source: https://circleloaders.dominikakissi.com/#radar
-function radar(): string {
+function radar(paused: boolean): string {
   const wedges = Array.from({ length: 36 }, (_, i) => {
     const a0 = ((i * 2.5 - 90) * Math.PI) / 180;
     const a1 = (((i + 1) * 2.5 - 90) * Math.PI) / 180;
@@ -152,7 +188,7 @@ function radar(): string {
     )
     .join("");
 
-  return `<svg class="rad" viewBox="0 0 64 64" width="44" height="44" fill="none" aria-hidden="true" focusable="false">
+  return `<svg class="rad${paused ? " rad-off" : ""}" viewBox="0 0 64 64" width="44" height="44" fill="none" aria-hidden="true" focusable="false">
     <defs><clipPath id="rad-disc"><circle cx="32" cy="32" r="32"/></clipPath></defs>
     <circle class="rad-ring" cx="32" cy="32" r="31.5"/>
     <circle class="rad-ring" cx="32" cy="32" r="15"/>
@@ -163,7 +199,13 @@ function radar(): string {
   </svg>`;
 }
 
-function statusBadge(data: DashboardData): string {
+function statusBadge(data: DashboardView): string {
+  // Pause outranks everything else: it is the one state a human caused on
+  // purpose, and it explains the missing data that the other branches
+  // would otherwise report as an outage.
+  if (data.pause) {
+    return `<span class="badge badge-paused">Paused</span>`;
+  }
   if (data.degraded) {
     return `<span class="badge badge-unknown">Storage error</span>`;
   }
@@ -173,6 +215,19 @@ function statusBadge(data: DashboardData): string {
   return data.last.ok
     ? `<span class="badge badge-up">Operational</span>`
     : `<span class="badge badge-down">Down</span>`;
+}
+
+// The badge alone cannot say when probing comes back, and that is the only
+// question a paused page raises.
+function pauseBanner(data: DashboardView): string {
+  if (!data.pause) return "";
+  const { until } = data.pause;
+  return `
+  <div class="banner">
+    Probing is paused until <b>${escape(fmtDateTime(until))}</b> UTC+8
+    — about ${escape(fmtLeft(until - data.generatedAt))} left. The cadence
+    resumes on its own; no probes are being recorded until then.
+  </div>`;
 }
 
 function card(label: string, value: string, hint = ""): string {
@@ -186,14 +241,14 @@ function card(label: string, value: string, hint = ""): string {
 
 // Plain links, so switching ranges stays a server round trip and each
 // range gets its own edge cache entry.
-function rangeTabs(data: DashboardData): string {
+function rangeTabs(data: DashboardView): string {
   return RANGES.map(
     (r) =>
       `<a class="tab${r.key === data.range.key ? " is-on" : ""}" href="/?r=${escape(r.key)}">${escape(r.label)}</a>`
   ).join("");
 }
 
-export function renderDashboard(data: DashboardData): string {
+export function renderDashboard(data: DashboardView): string {
   const cells = buildCells(data)
     .map(
       (c) =>
@@ -259,6 +314,10 @@ export function renderDashboard(data: DashboardData): string {
     .rad-sweep { animation: none; transform: rotate(214deg); }
     .rad-blip { animation: none; opacity: .7; }
   }
+  /* Parked radar: probing is paused, so the sweep must not imply otherwise. */
+  .rad-off { color: var(--c-degraded); }
+  .rad-off .rad-sweep { animation: none; transform: rotate(214deg); }
+  .rad-off .rad-blip { animation: none; opacity: .45; }
   h1 { margin: 0; font-size: 22px; letter-spacing: .3px; }
   .sub { color: var(--muted); font-size: 13px; }
   .badge {
@@ -268,6 +327,13 @@ export function renderDashboard(data: DashboardData): string {
   .badge-up { background: rgba(34,197,94,.15); color: var(--c-up); }
   .badge-down { background: rgba(239,68,68,.15); color: var(--c-down); }
   .badge-unknown { background: rgba(139,148,158,.15); color: var(--muted); }
+  .badge-paused { background: rgba(245,158,11,.15); color: var(--c-degraded); }
+  .banner {
+    margin-top: 18px; padding: 11px 14px; border-radius: 8px;
+    background: rgba(245,158,11,.1); border: 1px solid rgba(245,158,11,.28);
+    color: var(--c-degraded); font-size: 13px; line-height: 1.6;
+  }
+  .banner b { color: var(--fg); font-weight: 600; }
   .grid {
     display: grid; gap: 12px; margin: 24px 0;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -322,11 +388,12 @@ export function renderDashboard(data: DashboardData): string {
 <body>
 <div class="wrap">
   <header>
-    ${radar()}
+    ${radar(!!data.pause)}
     <h1>${escape(SITE_TITLE)}</h1>
     ${statusBadge(data)}
     <span class="sub">${escape(MODEL_ID)}</span>
   </header>
+  ${pauseBanner(data)}
 
   <div class="tabs">${rangeTabs(data)}</div>
 
@@ -348,7 +415,7 @@ export function renderDashboard(data: DashboardData): string {
       <span><i style="background:var(--c-degraded)"></i>≥50%</span>
       <span><i style="background:var(--c-down)"></i>&lt;50%</span>
       <span><i style="background:var(--c-missing)"></i>no data</span>
-      <span><i style="background:var(--c-idle)"></i>outside window</span>
+      <span><i style="background:var(--c-idle)"></i>${data.pause ? "outside window / paused" : "outside window"}</span>
     </div>
   </div>
 

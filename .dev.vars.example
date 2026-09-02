@@ -8,6 +8,7 @@ INPUT_TEXT=Hi! What is the current time? Don't reply to anything else.
 RESEND_API_KEY=re_xxxxxxxxxxxxxxxx
 MAIL_TO=you@example.com
 
-# Unlocks GET /trigger?t=<token> for a manual one-shot probe.
-# Leave unset and the route 404s — the status page itself is public.
+# Unlocks the token-gated routes: GET /trigger (manual one-shot probe),
+# /pause and /resume (stand the scheduled cadence down for a while).
+# Leave unset and they all 404 — the status page itself is public.
 TRIGGER_TOKEN=pick-any-random-string
