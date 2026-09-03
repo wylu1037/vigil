@@ -50,7 +50,7 @@ Worker 根路径 `/` 提供一个**公开的**服务端渲染状态页：当前�
 | `GET /` | 状态页 HTML |
 | `GET /api/status` | 同一份数据的 JSON |
 | `GET /trigger?t=<token>` | 手动单次探测，需 `TRIGGER_TOKEN` |
-| `GET /pause?t=<token>&m=<分钟>` | 暂停自动节奏，需 `TRIGGER_TOKEN` |
+| `GET /pause?t=<token>&for=<时长>` | 暂停自动节奏，需 `TRIGGER_TOKEN` |
 | `GET /resume?t=<token>` | 提前解除暂停，需 `TRIGGER_TOKEN` |
 
 探测数据写入 D1：每个块结束时**一次性批量插入**全部尝试，而不是每次请求各写一次 —— 后者会把存储延迟塞进那条按绝对偏移对齐的重试循环。保留 7 天，每天首个块顺带清理过期行。
@@ -64,12 +64,13 @@ Worker 根路径 `/` 提供一个**公开的**服务端渲染状态页：当前�
 有时需要让探测停一会儿：中转站在维护、你正在手动调试它，或者只是不想在一次已知故障期间被恢复邮件轰炸。
 
 ```bash
-curl "https://<worker>/pause?t=$TRIGGER_TOKEN&m=90"   # 暂停 90 分钟
-curl "https://<worker>/pause?t=$TRIGGER_TOKEN"        # 不传 m 则默认 60 分钟
+curl "https://<worker>/pause?t=$TRIGGER_TOKEN&for=90m" # 暂停 90 分钟
+curl "https://<worker>/pause?t=$TRIGGER_TOKEN&for=2h"  # 暂停 2 小时
+curl "https://<worker>/pause?t=$TRIGGER_TOKEN"        # 不传 for 则默认 60 分钟
 curl "https://<worker>/resume?t=$TRIGGER_TOKEN"       # 提前恢复
 ```
 
-**任何暂停都必然到期。** `m` 上限 24 小时，且没有"无限期暂停"这个选项。这是有意为之：这个 Worker 存在的全部意义就是不让中转站冷掉，那么一次被遗忘的暂停就绝不能把它永久静音。真需要更长时间的停机，就去掉 cron 触发器 —— 那本就是部署级别的决定，也该长得像一个部署级别的决定。
+**任何暂停都必然到期。** `for` 接受整数加可选的 `m`/`h`/`d` 后缀（纯数字按分钟算），上限 30 天，且没有"无限期暂停"这个选项。这是有意为之：这个 Worker 存在的全部意义就是不让中转站冷掉，那么一次被遗忘的暂停就绝不能把它永久静音。真需要更长时间的停机，就去掉 cron 触发器 —— 那本就是部署级别的决定，也该长得像一个部署级别的决定。
 
 几个值得知道的性质：
 
@@ -128,7 +129,7 @@ curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"
 curl "http://localhost:8787/trigger?t=$TRIGGER_TOKEN"
 
 # 暂停定时节奏，再解除
-curl "http://localhost:8787/pause?t=$TRIGGER_TOKEN&m=5"
+curl "http://localhost:8787/pause?t=$TRIGGER_TOKEN&for=5m"
 curl "http://localhost:8787/resume?t=$TRIGGER_TOKEN"
 
 # 核对页面数字

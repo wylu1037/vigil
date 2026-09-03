@@ -50,7 +50,7 @@ The Worker serves a **public**, server-rendered status page at `/`: current stat
 | `GET /` | the status page |
 | `GET /api/status` | the same data as JSON |
 | `GET /trigger?t=<token>` | manual one-shot probe, needs `TRIGGER_TOKEN` |
-| `GET /pause?t=<token>&m=<minutes>` | stand the automatic cadence down, needs `TRIGGER_TOKEN` |
+| `GET /pause?t=<token>&for=<duration>` | stand the automatic cadence down, needs `TRIGGER_TOKEN` |
 | `GET /resume?t=<token>` | lift a pause early, needs `TRIGGER_TOKEN` |
 
 Probes land in D1 as **one batched insert per block**, not one write per request — the latter would put storage latency inside a retry loop that is pinned to absolute offsets. Rows are kept for 7 days; the first block of each day sweeps the rest.
@@ -64,12 +64,13 @@ The page renders **no** `BASE_URL`, no credentials, and no slice of the relay's 
 Sometimes you need the pings to stop for a while — the relay is under maintenance, you are debugging it by hand, or you would rather not have recovery emails firing during a known outage.
 
 ```bash
-curl "https://<worker>/pause?t=$TRIGGER_TOKEN&m=90"   # 90 minutes
-curl "https://<worker>/pause?t=$TRIGGER_TOKEN"        # defaults to 60
+curl "https://<worker>/pause?t=$TRIGGER_TOKEN&for=90m" # 90 minutes
+curl "https://<worker>/pause?t=$TRIGGER_TOKEN&for=2h"  # 2 hours
+curl "https://<worker>/pause?t=$TRIGGER_TOKEN"        # defaults to 60m
 curl "https://<worker>/resume?t=$TRIGGER_TOKEN"       # lift it early
 ```
 
-**Every pause expires.** `m` is capped at 24 hours and there is no way to ask for an open-ended one. That is deliberate: the whole point of this Worker is that the relay never goes cold, so a pause you forget about must not be able to silence it indefinitely. If you genuinely need a longer stand-down, remove the cron trigger — that is a deploy-level decision, and it should look like one.
+**Every pause expires.** `for` takes a whole number with an optional `m`/`h`/`d` suffix (bare digits are minutes), capped at 30 days; there is no way to ask for an open-ended one. That is deliberate: the whole point of this Worker is that the relay never goes cold, so a pause you forget about must not be able to silence it indefinitely. If you genuinely need a longer stand-down, remove the cron trigger — that is a deploy-level decision, and it should look like one.
 
 A few properties worth knowing:
 
@@ -128,7 +129,7 @@ curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"
 curl "http://localhost:8787/trigger?t=$TRIGGER_TOKEN"
 
 # Pause the scheduled cadence, then lift it again
-curl "http://localhost:8787/pause?t=$TRIGGER_TOKEN&m=5"
+curl "http://localhost:8787/pause?t=$TRIGGER_TOKEN&for=5m"
 curl "http://localhost:8787/resume?t=$TRIGGER_TOKEN"
 
 # Cross-check what the page shows
