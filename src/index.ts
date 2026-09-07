@@ -1,5 +1,6 @@
 // Worker entry: cron-scheduled handler + the public status page.
 
+import { renderAdmin } from "./admin";
 import { sendChat } from "./api";
 import {
   MAX_PAUSE_DAYS,
@@ -10,7 +11,7 @@ import {
 } from "./config";
 import { loadDashboard, recordProbes } from "./db";
 import { inWindowUtc8, isBlockStart, runAdaptiveBlock } from "./schedule";
-import { clearPause, readPause, writePause } from "./state";
+import { clearPause, readPause, writePause, type Pause } from "./state";
 import { renderDashboard, type DashboardView } from "./ui";
 
 // Length-independent comparison, so a wrong token leaks no timing signal.
@@ -26,9 +27,14 @@ function tokenMatches(expected: string, got: string | null): boolean {
 // Fails closed: with no TRIGGER_TOKEN configured the guarded routes do not
 // exist at all, so a public deployment can never be used to burn relay
 // quota or to silence the keep-alive.
-function authorized(env: Env, url: URL): boolean {
+function authorized(req: Request, env: Env, url: URL): boolean {
   const expected = env.TRIGGER_TOKEN;
-  return !!expected && tokenMatches(expected, url.searchParams.get("t"));
+  const authorization = req.headers.get("Authorization");
+  const token =
+    authorization === null
+      ? url.searchParams.get("t")
+      : /^Bearer (.+)$/i.exec(authorization)?.[1] ?? null;
+  return !!expected && tokenMatches(expected, token);
 }
 
 // Control-plane responses are never cached, unlike the status page.
@@ -41,7 +47,18 @@ const plain = (body: string, status = 200) =>
     },
   });
 
-const notFound = () => new Response("not found\n", { status: 404 });
+const notFound = () => plain("not found\n", 404);
+
+const wantsJson = (req: Request) =>
+  req.headers.get("Accept")?.includes("application/json");
+
+const pauseStatus = (pause: Pause | null, generatedAt = Date.now()) =>
+  new Response(JSON.stringify({ pause, generatedAt }), {
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
 
 const cacheHeaders = (contentType: string) => ({
   "Content-Type": contentType,
@@ -87,9 +104,20 @@ export default {
 
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
+    const isPauseControl = url.pathname === "/pause" || url.pathname === "/resume";
 
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      return new Response("method not allowed\n", { status: 405 });
+    if (
+      req.method !== "GET" &&
+      req.method !== "HEAD" &&
+      !(req.method === "POST" && isPauseControl)
+    ) {
+      return new Response("method not allowed\n", {
+        status: 405,
+        headers: {
+          Allow: isPauseControl ? "GET, HEAD, POST" : "GET, HEAD",
+          "Cache-Control": "no-store",
+        },
+      });
     }
 
     // Unknown ?r= values fall back to the default range instead of 400ing.
@@ -110,9 +138,32 @@ export default {
         });
       }
 
+      case "/admin": {
+        const nonce = crypto.randomUUID();
+        return new Response(renderAdmin(nonce), {
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "X-Robots-Tag": "noindex, nofollow",
+            "Content-Security-Policy":
+              "default-src 'none'; " +
+              `script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; ` +
+              "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+          },
+        });
+      }
+
+      case "/api/admin/status": {
+        if (!authorized(req, env, url)) return notFound();
+        const now = Date.now();
+        return pauseStatus(await readPause(env, now), now);
+      }
+
       // Manual one-shot probe.
       case "/trigger": {
-        if (!authorized(env, url)) return notFound();
+        if (!authorized(req, env, url)) return notFound();
         // A manual probe is still a real probe — chart it like any other.
         ctx.waitUntil(sendChat(env).then((p) => recordProbes(env, [p])));
         return plain("triggered 🚀\n");
@@ -123,7 +174,7 @@ export default {
       // traffic, and it is the natural way to check whether whatever you
       // paused for is over yet.
       case "/pause": {
-        if (!authorized(env, url)) return notFound();
+        if (!authorized(req, env, url)) return notFound();
 
         // ?m= was minutes-only. Saying so beats silently ignoring it and
         // pausing for the default hour instead of the requested stretch.
@@ -152,13 +203,14 @@ export default {
           return plain("pause failed, still probing\n", 500);
         }
 
+        if (wantsJson(req)) return pauseStatus(pause);
         return plain(
           `paused ${duration.label}, until ${new Date(pause.until).toISOString()}\n`
         );
       }
 
       case "/resume": {
-        if (!authorized(env, url)) return notFound();
+        if (!authorized(req, env, url)) return notFound();
         try {
           await clearPause(env);
         } catch (e: unknown) {
@@ -168,6 +220,7 @@ export default {
           return plain("resume failed, still paused\n", 500);
         }
         // Idempotent: resuming when not paused is a no-op, not an error.
+        if (wantsJson(req)) return pauseStatus(null);
         return plain("resumed ✅\n");
       }
 

@@ -320,6 +320,8 @@ export function renderDashboard(data: DashboardView): string {
   .rad-off .rad-blip { animation: none; opacity: .45; }
   h1 { margin: 0; font-size: 22px; letter-spacing: .3px; }
   .sub { color: var(--muted); font-size: 13px; }
+  .manage { margin-left: auto; color: var(--muted); font-size: 13px; text-decoration: none; }
+  .manage:hover { color: var(--fg); }
   .badge {
     display: inline-block; padding: 2px 10px; border-radius: 999px;
     font-size: 12px; font-weight: 600;
@@ -392,6 +394,7 @@ export function renderDashboard(data: DashboardView): string {
     <h1>${escape(SITE_TITLE)}</h1>
     ${statusBadge(data)}
     <span class="sub">${escape(MODEL_ID)}</span>
+    <a class="manage" href="/admin">Manage →</a>
   </header>
   ${pauseBanner(data)}
 

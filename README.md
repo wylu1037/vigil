@@ -49,6 +49,8 @@ The Worker serves a **public**, server-rendered status page at `/`: current stat
 |---|---|
 | `GET /` | the status page |
 | `GET /api/status` | the same data as JSON |
+| `GET /admin` | pause / resume management page |
+| `GET /api/admin/status` | uncached pause state, needs `TRIGGER_TOKEN` |
 | `GET /trigger?t=<token>` | manual one-shot probe, needs `TRIGGER_TOKEN` |
 | `GET /pause?t=<token>&for=<duration>` | stand the automatic cadence down, needs `TRIGGER_TOKEN` |
 | `GET /resume?t=<token>` | lift a pause early, needs `TRIGGER_TOKEN` |
@@ -58,6 +60,19 @@ Probes land in D1 as **one batched insert per block**, not one write per request
 > Since probing only runs 07:00–23:59 (UTC+8), the strip has a 7-hour gap every night. Those cells render as a neutral grey "outside window", distinct from both "no data" and "down".
 
 The page renders **no** `BASE_URL`, no credentials, and no slice of the relay's response. `/trigger` fails closed: with no `TRIGGER_TOKEN` configured it simply 404s, so a public deployment can never be used to burn your relay quota.
+
+## Management Page
+
+Open `/admin` (or **Manage →** in the status page header), enter the deployment's `TRIGGER_TOKEN`, and connect to:
+
+- View the current pause state, start and automatic resume times (UTC+8), and a live countdown.
+- Choose a 30-minute, 1-hour, 6-hour, or 1-day preset, or enter a custom whole number of minutes / hours / days, capped at 30 days.
+- Pause or resume probing and see the result in place. Controls are disabled while a request is pending to prevent duplicate submissions.
+- Refresh the state or disconnect to clear the token. Reloading the page requires entering the token again.
+
+The management page contains no secrets and is publicly accessible; reading management state and performing actions still require a valid token. Missing configuration or an invalid token returns 404. The token stays in the current page's memory and is sent in the `Authorization: Bearer <token>` header, never in the URL or browser storage.
+
+The page calls `POST /pause?for=<duration>` and `POST /resume` with `Accept: application/json` to receive `{ pause, generatedAt }`. Successful actions display the written state directly rather than relying on the public status page's 30-second cache. The management page and control responses use `Cache-Control: no-store`. Existing GET endpoints, `?t=` authentication, and plain-text responses remain compatible. KV propagation across locations can still lag, and pausing does not cancel a probe block already in progress.
 
 ## Pause & Resume
 
@@ -96,7 +111,7 @@ A few properties worth knowing:
 | `RESEND_API_KEY` | Yes | Resend API key | `wrangler secret put RESEND_API_KEY` |
 | `MAIL_TO` | Yes | Notification recipient | `wrangler secret put MAIL_TO` |
 | `INPUT_TEXT` | No | Custom prompt; falls back to a built-in default | `vars` or secret |
-| `TRIGGER_TOKEN` | No | Unlocks `GET /trigger`, `/pause` and `/resume`; they 404 without it | `wrangler secret put TRIGGER_TOKEN` |
+| `TRIGGER_TOKEN` | No | Unlocks management actions, `/api/admin/status`, `/trigger`, `/pause` and `/resume`; these endpoints 404 without it | `wrangler secret put TRIGGER_TOKEN` |
 | `VIGIL_STATE` | Yes | KV binding for the email counter and the pause record | `wrangler.jsonc` `kv_namespaces` |
 | `DB` | Yes | D1 binding for the status page's probe history | `wrangler.jsonc` `d1_databases` |
 
@@ -120,6 +135,9 @@ From another terminal:
 ```bash
 # Open the status page
 open http://localhost:8787/
+
+# Open the management page and enter TRIGGER_TOKEN to pause / resume
+open http://localhost:8787/admin
 
 # Simulate a cron tick. Must be an even minute, and inside the UTC+8 window,
 # or the handler returns immediately by design.
@@ -167,7 +185,7 @@ npx wrangler d1 migrations apply vigil --remote
 npx wrangler secret put API_KEY
 npx wrangler secret put RESEND_API_KEY
 npx wrangler secret put MAIL_TO
-npx wrangler secret put TRIGGER_TOKEN   # optional, only for /trigger
+npx wrangler secret put TRIGGER_TOKEN   # optional, for management actions and manual probes
 
 # 5) Deploy
 pnpm deploy
@@ -190,6 +208,7 @@ src/schedule.ts       # the adaptive block — cadence, jitter, pause gate, reco
 src/api.ts            # Responses API call; returns success + latency
 src/db.ts             # D1: probe writes, retention sweep, dashboard queries
 src/ui.ts             # the status page HTML (server-rendered)
+src/admin.ts          # management page HTML and pause / resume interactions
 src/mailer.ts         # Resend notification
 src/state.ts          # KV: last outcome + daily email counter, and the pause record
 src/config.ts         # request and page constants (Env is generated)

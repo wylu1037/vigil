@@ -49,6 +49,8 @@ Worker 根路径 `/` 提供一个**公开的**服务端渲染状态页：当前�
 |---|---|
 | `GET /` | 状态页 HTML |
 | `GET /api/status` | 同一份数据的 JSON |
+| `GET /admin` | 暂停 / 恢复管理页面 |
+| `GET /api/admin/status` | 当前暂停状态，无缓存，需 `TRIGGER_TOKEN` |
 | `GET /trigger?t=<token>` | 手动单次探测，需 `TRIGGER_TOKEN` |
 | `GET /pause?t=<token>&for=<时长>` | 暂停自动节奏，需 `TRIGGER_TOKEN` |
 | `GET /resume?t=<token>` | 提前解除暂停，需 `TRIGGER_TOKEN` |
@@ -58,6 +60,19 @@ Worker 根路径 `/` 提供一个**公开的**服务端渲染状态页：当前�
 > 因为探测只在 UTC+8 07:00–23:59 进行，趋势条每天必有 7 小时空档。这些格子渲染为中性灰"窗口外"，与真正的"无数据"和"不可用"三色分明。
 
 页面**不渲染** `BASE_URL`、任何密钥或中转站响应体。`/trigger` 默认失效：未配置 `TRIGGER_TOKEN` 时直接 404，公开部署无法被用来消耗你的中转站额度。
+
+## 管理页面
+
+打开 `/admin`（或点击状态页右上角的 **Manage →**），输入部署时配置的 `TRIGGER_TOKEN` 并连接，即可：
+
+- 查看当前是否暂停、暂停开始时间、自动恢复时间（UTC+8）及剩余倒计时。
+- 选择 30 分钟、1 小时、6 小时、1 天的快捷时长，或输入自定义整数分钟 / 小时 / 天，最长 30 天。
+- 点击「暂停探测」或「恢复探测」，直接查看操作结果；请求期间按钮禁用，避免重复提交。
+- 手动刷新状态，或断开连接清除令牌。刷新页面后需要重新输入令牌。
+
+管理页面本身不包含密钥，可以公开访问；读取管理状态及执行操作仍需通过令牌验证，未配置或令牌错误均返回 404。令牌只保存在当前页面内存中，通过 `Authorization: Bearer <token>` 请求头发送，不写入 URL 或浏览器存储。
+
+页面调用 `POST /pause?for=<时长>` 和 `POST /resume`，并通过 `Accept: application/json` 获取 `{ pause, generatedAt }`。操作成功后直接展示已写入的状态，不依赖公开状态页的 30 秒缓存；管理页面及管理接口均返回 `Cache-Control: no-store`。原有 GET 端点、`?t=` 鉴权和纯文本响应保持兼容。KV 跨节点同步仍可能有延迟，且暂停不会取消已经开始的探测块。
 
 ## 暂停与恢复
 
@@ -96,7 +111,7 @@ curl "https://<worker>/resume?t=$TRIGGER_TOKEN"       # 提前恢复
 | `RESEND_API_KEY` | 是 | Resend API Key | `wrangler secret put RESEND_API_KEY` |
 | `MAIL_TO` | 是 | 通知收件人 | `wrangler secret put MAIL_TO` |
 | `INPUT_TEXT` | 否 | 自定义提示词，缺省时用内置默认值 | `vars` 或 secret |
-| `TRIGGER_TOKEN` | 否 | 解锁 `GET /trigger`、`/pause`、`/resume`，不设则这些路由 404 | `wrangler secret put TRIGGER_TOKEN` |
+| `TRIGGER_TOKEN` | 否 | 解锁管理操作、`/api/admin/status`、`/trigger`、`/pause`、`/resume`，不设则这些接口 404 | `wrangler secret put TRIGGER_TOKEN` |
 | `VIGIL_STATE` | 是 | 邮件计数与暂停记录用的 KV 绑定 | `wrangler.jsonc` 的 `kv_namespaces` |
 | `DB` | 是 | 状态页探测数据的 D1 绑定 | `wrangler.jsonc` 的 `d1_databases` |
 
@@ -120,6 +135,9 @@ pnpm dev                          # 本地服务（带 scheduled 测试端点）
 ```bash
 # 打开状态页
 open http://localhost:8787/
+
+# 打开管理页面，输入 TRIGGER_TOKEN 后可暂停 / 恢复
+open http://localhost:8787/admin
 
 # 模拟 cron 触发。必须是偶数分钟且在 UTC+8 窗口内，
 # 否则处理器会按设计直接返回。
@@ -166,7 +184,7 @@ npx wrangler d1 migrations apply vigil --remote
 npx wrangler secret put API_KEY
 npx wrangler secret put RESEND_API_KEY
 npx wrangler secret put MAIL_TO
-npx wrangler secret put TRIGGER_TOKEN   # 可选，想用 /trigger 才需要
+npx wrangler secret put TRIGGER_TOKEN   # 可选，管理操作及手动探测需要
 
 # 5) 部署
 pnpm deploy
@@ -189,6 +207,7 @@ src/schedule.ts       # 自适应块 —— 节奏、抖动、暂停闸门、恢
 src/api.ts            # Responses API 调用，返回成败 + 延迟
 src/db.ts             # D1：探测时序的写入、清理与聚合查询
 src/ui.ts             # 状态页 HTML（服务端渲染）
+src/admin.ts          # 管理页面 HTML 与暂停 / 恢复交互
 src/mailer.ts         # Resend 邮件通知
 src/state.ts          # KV：上一块结果 + 每日邮件计数，以及暂停记录
 src/config.ts         # 请求与页面常量（Env 是生成的，不手写）
