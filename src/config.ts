@@ -4,7 +4,7 @@
 // worker-configuration.d.ts by `wrangler types` and is globally available.
 // Re-run `wrangler types` after changing bindings in wrangler.jsonc.
 
-export const MODEL_ID = "gpt-5.6-sol";
+export const MODEL_ID = "gpt-6-astra";
 
 // Used when the INPUT_TEXT binding is absent or empty
 export const DEFAULT_INPUT =
