@@ -18,7 +18,11 @@ worker-configuration.d.ts
 dist/
 *.tsbuildinfo
 
-pinger/
+# pinger 源码进 git，编译产物不进（用具体文件名，别写 codex/ 会连 .ts 一起忽略）
+codex/pinger
+claude/pinger
+codex/*.ll
+claude/*.ll
 
 # Logs
 *.log

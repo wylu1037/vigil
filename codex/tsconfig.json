@@ -1,0 +1,4 @@
+{
+  "extends": "../pinger/tsconfig.json",
+  "include": ["pinger.ts", "../pinger/*.ts"]
+}
