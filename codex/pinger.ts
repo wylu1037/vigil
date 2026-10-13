@@ -9,7 +9,7 @@ import { main, type ProbeRequest, type Target } from "../pinger/core.ts";
 const MODEL_ID = "gpt-6-astra";
 const INPUT_TEXT = "Hi! What is the current time? Don't reply to anything else.";
 const USER_AGENT =
-  "codex-tui/0.145.0 (Mac OS 15.5.0; arm64) WarpTerminal/v0.2026.07.15.08.55.stable_01 (codex-tui; 0.145.0)";
+  "codex-tui/0.162.1 (Mac OS 15.5.0; arm64) WarpTerminal/v0.2026.07.15.08.55.stable_01 (codex-tui; 0.162.1)";
 
 const target: Target = {
   name: "codex",
