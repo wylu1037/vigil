@@ -1,4 +1,4 @@
-import { MAX_PAUSE_DAYS, SITE_TITLE } from "./config";
+import { MAX_PAUSE_DAYS, SCHEDULE_ENABLED, SITE_TITLE } from "./config";
 
 export function renderAdmin(nonce: string): string {
   return String.raw`<!doctype html>
@@ -56,6 +56,7 @@ export function renderAdmin(nonce: string): string {
   .badge { padding: 3px 10px; border-radius: 999px; font-size: 12px; background: #8b949e20; color: var(--muted); }
   .badge.active { background: #22c55e20; color: var(--green); }
   .badge.paused { background: #f59e0b20; color: var(--amber); }
+  .badge.stopped { background: #8b949e20; color: var(--muted); }
   .status-heading { margin: 16px 0 4px; font-size: 24px; }
   dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 20px 0 12px; }
   dt { color: var(--muted); font-size: 12px; }
@@ -112,7 +113,7 @@ export function renderAdmin(nonce: string): string {
     </div>
     <h3 class="status-heading" id="status-heading">Waiting for connection</h3>
     <p class="hint" id="status-description">Enter your admin token to view the pause status.</p>
-    <dl>
+    <dl${SCHEDULE_ENABLED ? "" : " hidden"}>
       <div><dt>Paused since · UTC+8</dt><dd id="pause-since">—</dd></div>
       <div><dt>Resumes at · UTC+8</dt><dd id="pause-until">—</dd></div>
       <div><dt>Time remaining</dt><dd id="pause-left">—</dd></div>
@@ -120,7 +121,7 @@ export function renderAdmin(nonce: string): string {
     <div class="hint" id="last-updated">Status not loaded</div>
   </section>
 
-  <fieldset id="controls" disabled aria-label="Pause and resume">
+  <fieldset id="controls"${SCHEDULE_ENABLED ? "" : " hidden"} disabled aria-label="Pause and resume">
     <div class="actions">
       <section class="panel">
         <h2>Pause automatic probing</h2>
@@ -163,6 +164,7 @@ export function renderAdmin(nonce: string): string {
     timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
   });
+  const scheduleEnabled = ${SCHEDULE_ENABLED};
   let token = "";
   let pause = null;
   let updatedAt = null;
@@ -190,18 +192,20 @@ export function renderAdmin(nonce: string): string {
     const paused = Boolean(token && pause && pause.until > Date.now() + clockOffset);
     element("connection").hidden = Boolean(token);
     element("session").hidden = !token;
-    element("controls").disabled = busy || !token;
+    element("controls").disabled = busy || !token || !scheduleEnabled;
     element("connect-button").disabled = busy;
     tokenInput.disabled = busy;
     element("disconnect").disabled = busy;
     element("refresh").disabled = busy || !token;
-    element("resume").disabled = busy || !paused;
+    element("resume").disabled = busy || !paused || !scheduleEnabled;
     element("admin").setAttribute("aria-busy", String(busy));
     const badge = element("status-badge");
-    badge.className = "badge" + (token ? paused ? " paused" : " active" : "");
-    badge.textContent = token ? paused ? "Paused" : "Not paused" : "Not connected";
-    element("status-heading").textContent = token ? paused ? "Automatic probing paused" : "Automatic scheduling enabled" : "Waiting for connection";
-    element("status-description").textContent = !token ? "Enter your admin token to view the pause status." : paused ?
+    badge.className = "badge" + (scheduleEnabled ? token ? paused ? " paused" : " active" : "" : " stopped");
+    badge.textContent = scheduleEnabled ? token ? paused ? "Paused" : "Not paused" : "Not connected" : "Stopped";
+    element("status-heading").textContent = !scheduleEnabled ? "Automatic probing permanently stopped" : token ? paused ? "Automatic probing paused" : "Automatic scheduling enabled" : "Waiting for connection";
+    element("status-description").textContent = !scheduleEnabled ?
+      "This deployment has no cron trigger, so no scheduled probes run and no cadence will resume. Add a cron trigger in wrangler.jsonc to re-enable it. /trigger still records a single manual probe." :
+      !token ? "Enter your admin token to view the pause status." : paused ?
       "Probing resumes automatically when the pause expires. You can close this page." : "Scheduled probes run at the normal cadence within the operating window.";
     element("pause-since").textContent = paused ? dateFormat.format(pause.since) : "—";
     element("pause-until").textContent = paused ? dateFormat.format(pause.until) : "—";

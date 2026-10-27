@@ -6,7 +6,14 @@
 // The page is public: it must never render BASE_URL, credentials, or any
 // slice of the relay's response body.
 
-import { HOUR_MS, MODEL_ID, RANGES, SITE_TITLE, UTC8_OFFSET_MS } from "./config";
+import {
+  HOUR_MS,
+  MODEL_ID,
+  RANGES,
+  SCHEDULE_ENABLED,
+  SITE_TITLE,
+  UTC8_OFFSET_MS,
+} from "./config";
 import type { Bucket, DashboardData } from "./db";
 import type { Pause } from "./state";
 
@@ -132,6 +139,8 @@ function buildCells(data: DashboardView): Cell[] {
         cells.push({ color: "var(--c-idle)", title: `${label} · outside window` });
       } else if (bucketIsPaused(startMs, bucketMs)) {
         cells.push({ color: "var(--c-idle)", title: `${label} · paused` });
+      } else if (!SCHEDULE_ENABLED) {
+        cells.push({ color: "var(--c-idle)", title: `${label} · stopped` });
       } else {
         cells.push({ color: "var(--c-missing)", title: `${label} · no data` });
       }
@@ -160,8 +169,9 @@ function buildCells(data: DashboardView): Cell[] {
 // Decorative sweeping radar, shown beside the title. Purely presentational:
 // aria-hidden so it stays out of the accessibility tree, and it reads no
 // probe data — the sweep runs at a fixed rate whatever the relay is doing.
-// The one exception is a pause, where a sweeping radar would claim we are
-// still watching; it parks instead, at the same angle reduced-motion uses.
+// The exception is a pause or a stopped schedule, where a sweeping radar
+// would claim we are still watching; it parks instead, at the same angle
+// reduced-motion uses.
 // Wedge paths are pre-computed (SVG has no conic gradient), and each blip is
 // delayed by its own bearing so it flares as the leading edge crosses it.
 // Source: https://circleloaders.dominikakissi.com/#radar
@@ -200,6 +210,11 @@ function radar(paused: boolean): string {
 }
 
 function statusBadge(data: DashboardView): string {
+  // A stopped schedule outranks a pause: with no cron trigger the pause flag
+  // changes nothing, and the page must not imply probing is being watched.
+  if (!SCHEDULE_ENABLED) {
+    return `<span class="badge badge-stopped">Stopped</span>`;
+  }
   // Pause outranks everything else: it is the one state a human caused on
   // purpose, and it explains the missing data that the other branches
   // would otherwise report as an outage.
@@ -218,8 +233,17 @@ function statusBadge(data: DashboardView): string {
 }
 
 // The badge alone cannot say when probing comes back, and that is the only
-// question a paused page raises.
+// question a paused page raises. With the schedule stopped there is no such
+// time, so that case says so plainly instead of inviting a wait.
 function pauseBanner(data: DashboardView): string {
+  if (!SCHEDULE_ENABLED) {
+    return `
+  <div class="banner">
+    Scheduled probing is <b>permanently stopped</b>: this deployment has no
+    cron trigger. The figures below cover probes recorded before it stopped.
+    <code>/trigger</code> can still record a single manual probe.
+  </div>`;
+  }
   if (!data.pause) return "";
   const { until } = data.pause;
   return `
@@ -330,6 +354,7 @@ export function renderDashboard(data: DashboardView): string {
   .badge-down { background: rgba(239,68,68,.15); color: var(--c-down); }
   .badge-unknown { background: rgba(139,148,158,.15); color: var(--muted); }
   .badge-paused { background: rgba(245,158,11,.15); color: var(--c-degraded); }
+  .badge-stopped { background: rgba(139,148,158,.15); color: var(--muted); }
   .banner {
     margin-top: 18px; padding: 11px 14px; border-radius: 8px;
     background: rgba(245,158,11,.1); border: 1px solid rgba(245,158,11,.28);
@@ -390,7 +415,7 @@ export function renderDashboard(data: DashboardView): string {
 <body>
 <div class="wrap">
   <header>
-    ${radar(!!data.pause)}
+    ${radar(!!data.pause || !SCHEDULE_ENABLED)}
     <h1>${escape(SITE_TITLE)}</h1>
     ${statusBadge(data)}
     <span class="sub">${escape(MODEL_ID)}</span>
@@ -418,7 +443,13 @@ export function renderDashboard(data: DashboardView): string {
       <span><i style="background:var(--c-degraded)"></i>≥50%</span>
       <span><i style="background:var(--c-down)"></i>&lt;50%</span>
       <span><i style="background:var(--c-missing)"></i>no data</span>
-      <span><i style="background:var(--c-idle)"></i>${data.pause ? "outside window / paused" : "outside window"}</span>
+      <span><i style="background:var(--c-idle)"></i>${
+        !SCHEDULE_ENABLED
+          ? "outside window / stopped"
+          : data.pause
+            ? "outside window / paused"
+            : "outside window"
+      }</span>
     </div>
   </div>
 

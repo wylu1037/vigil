@@ -6,7 +6,9 @@
   "workers_dev": true,
   "preview_urls": false,
   "triggers": {
-    "crons": ["* * * * *"]
+    // Scheduled probing is permanently stopped: an empty array means no cron trigger.
+    // To restore it, put a cron expression back here (for example ["* * * * *"]).
+    "crons": []
   },
   "vars": {
     "BASE_URL": "https://anyrouter.top/v1",

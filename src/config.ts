@@ -25,6 +25,15 @@ const MINUTE_MS = 60_000;
 export const HOUR_MS = 3_600_000;
 const DAY_MS = 24 * HOUR_MS;
 
+// --- Scheduled probing ---
+
+// Whether the cron trigger in wrangler.jsonc is active. It must match
+// `triggers.crons`: the Worker cannot read its own cron configuration at
+// runtime, so this flag is how the pages know to say "stopped" instead of
+// "operational". Currently empty ("crons": []) — probing is permanently off,
+// and only the manual /trigger route can record a probe.
+export const SCHEDULE_ENABLED = false;
+
 // --- Manual pause ---
 
 // Every pause carries an expiry, and the expiry is bounded: a stray or
